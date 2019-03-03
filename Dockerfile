@@ -1,3 +1,3 @@
-FROM resin/armv7hf-debian:jessie
+FROM balenalib/armv7hf-debian:stretch
 
 COPY bin/ /usr/bin/
