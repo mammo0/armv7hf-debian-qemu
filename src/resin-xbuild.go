@@ -42,9 +42,9 @@ func runShell() error {
 	var cmd *exec.Cmd
 
 	if _, err := os.Stat("/usr/bin/qemu-arm-static"); err == nil {
-		cmd = exec.Command("/usr/bin/qemu-arm-static", append([]string{"-execve", "-0", os.Args[0], "/bin/sh"}, os.Args[1:]...)...)
+		cmd = exec.Command("/usr/bin/qemu-arm-static", append([]string{"-0", os.Args[0], "/bin/sh"}, os.Args[1:]...)...)
 	} else {
-		cmd = exec.Command("/usr/bin/qemu-aarch64-static", append([]string{"-execve", "-0", os.Args[0], "/bin/sh"}, os.Args[1:]...)...)
+		cmd = exec.Command("/usr/bin/qemu-aarch64-static", append([]string{"-0", os.Args[0], "/bin/sh"}, os.Args[1:]...)...)
 	}
 
 	cmd.Stdin = os.Stdin
