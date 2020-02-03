@@ -11,9 +11,9 @@ FROM multiarch/qemu-user-static:latest as qemu
 
 
 # runtime stage
-FROM balenalib/armv7hf-debian:stretch
+FROM scratch
 
-COPY bin/ /usr/bin/
-COPY --from=builder /go/src/resin-xbuild/resin-xbuild /usr/bin/
-COPY --from=qemu /usr/bin/qemu-arm-static /usr/bin
-COPY --from=qemu /usr/bin/qemu-aarch64-static /usr/bin
+COPY bin/ /
+COPY --from=builder /go/src/resin-xbuild/resin-xbuild /
+COPY --from=qemu /usr/bin/qemu-arm-static /
+COPY --from=qemu /usr/bin/qemu-aarch64-static /
