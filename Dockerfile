@@ -7,7 +7,7 @@ COPY src/resin-xbuild.go .
 RUN go build -ldflags "-w -s" resin-xbuild.go
 
 # get qemu-*-static
-FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
+FROM multiarch/qemu-user-static:latest as qemu
 
 
 # runtime stage
