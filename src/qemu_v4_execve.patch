@@ -1,0 +1,258 @@
+diff --git a/linux-user/main.c b/linux-user/main.c
+index 8ffc525..1328708 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -22,6 +22,7 @@
+ #include "qemu/units.h"
+ #include "sysemu/tcg.h"
+ #include "qemu-version.h"
++#include <sys/mman.h>
+ #include <sys/syscall.h>
+ #include <sys/resource.h>
+ 
+@@ -47,6 +48,8 @@
+ 
+ char *exec_path;
+ 
++extern unsigned long int getauxval (unsigned long int __type);
++
+ int singlestep;
+ static const char *filename;
+ static const char *argv0;
+@@ -92,6 +95,7 @@ static void usage(int exitcode);
+ 
+ static const char *interp_prefix = CONFIG_QEMU_INTERP_PREFIX;
+ const char *qemu_uname_release;
++const char *qemu_execve_path;
+ 
+ /* XXX: on x86 MAP_GROWSDOWN only works if ESP <= address + 32, so
+    we allocate a bigger stack. Need a better solution, for example
+@@ -335,6 +339,39 @@ static void handle_arg_guest_base(const char *arg)
+     have_guest_base = 1;
+ }
+ 
++static void handle_arg_execve(const char *arg)
++{
++    const char *execfn;
++    char buf[PATH_MAX];
++    char *ret;
++    int len;
++
++    /* try getauxval() */
++    execfn = (const char *) getauxval(AT_EXECFN);
++
++    if (execfn != 0) {
++        ret = realpath(execfn, buf);
++
++        if (ret != NULL) {
++            qemu_execve_path = strdup(buf);
++            return;
++        }
++    }
++
++    /* try /proc/self/exe */
++    len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
++
++    if (len != -1) {
++        buf[len] = '\0';
++        qemu_execve_path = strdup(buf);
++        return;
++    }
++
++    fprintf(stderr, "qemu_execve: unable to determine intepreter's path\n");
++    exit(EXIT_FAILURE);
++}
++
++
+ static void handle_arg_reserved_va(const char *arg)
+ {
+     char *p;
+@@ -424,6 +461,8 @@ static const struct qemu_argument arg_table[] = {
+      "uname",      "set qemu uname release string to 'uname'"},
+     {"B",          "QEMU_GUEST_BASE",  true,  handle_arg_guest_base,
+      "address",    "set guest_base address to 'address'"},
++    {"execve",     "QEMU_EXECVE",      false, handle_arg_execve,
++     "",           "use this interpreter when a process calls execve()"},
+     {"R",          "QEMU_RESERVED_VA", true,  handle_arg_reserved_va,
+      "size",       "reserve 'size' bytes for guest virtual address space"},
+     {"d",          "QEMU_LOG",         true,  handle_arg_log,
+diff --git a/linux-user/qemu.h b/linux-user/qemu.h
+index aac0334..fd90b9d 100644
+--- a/linux-user/qemu.h
++++ b/linux-user/qemu.h
+@@ -160,6 +160,7 @@ void init_task_state(TaskState *ts);
+ void task_settid(TaskState *);
+ void stop_all_tasks(void);
+ extern const char *qemu_uname_release;
++extern const char *qemu_execve_path;
+ extern unsigned long mmap_min_addr;
+ 
+ /* ??? See if we can avoid exposing so much of the loader internals.  */
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index 8367cb1..d44daf7 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -104,6 +104,7 @@
+ #include <netpacket/packet.h>
+ #include <linux/netlink.h>
+ #include <linux/if_alg.h>
++#include <linux/binfmts.h>
+ #include "linux_loop.h"
+ #include "uname.h"
+ 
+@@ -7215,6 +7216,136 @@ static int host_to_target_cpu_mask(const unsigned long *host_mask,
+     return 0;
+ }
+ 
++/* qemu_execve() Must return target values and target errnos. */
++static abi_long qemu_execve(char *filename, char *argv[],
++                  char *envp[])
++{
++    char *i_arg = NULL, *i_name = NULL;
++    char **new_argp;
++    const char *new_filename;
++    int argc, fd, ret, i, offset = 3;
++    char *cp;
++    char buf[BINPRM_BUF_SIZE];
++
++    /* normal execve case */
++    if (qemu_execve_path == NULL || *qemu_execve_path == 0) {
++        new_filename = filename;
++        new_argp = argv;
++    } else {
++        new_filename = qemu_execve_path;
++
++        for (argc = 0; argv[argc] != NULL; argc++) {
++            /* nothing */ ;
++        }
++
++        fd = open(filename, O_RDONLY);
++        if (fd == -1) {
++            return get_errno(fd);
++        }
++
++        ret = read(fd, buf, BINPRM_BUF_SIZE);
++        if (ret == -1) {
++            close(fd);
++            return get_errno(ret);
++        }
++
++        /* if we have less than 2 bytes, we can guess it is not executable */
++        if (ret < 2) {
++            close(fd);
++            return -host_to_target_errno(ENOEXEC);
++        }
++
++        close(fd);
++
++        /* adapted from the kernel
++         * https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/tree/fs/binfmt_script.c
++         */
++        if ((buf[0] == '#') && (buf[1] == '!')) {
++            /*
++             * This section does the #! interpretation.
++             * Sorta complicated, but hopefully it will work.  -TYT
++             */
++
++            buf[BINPRM_BUF_SIZE - 1] = '\0';
++            cp = strchr(buf, '\n');
++            if (cp == NULL) {
++                cp = buf + BINPRM_BUF_SIZE - 1;
++            }
++            *cp = '\0';
++            while (cp > buf) {
++                cp--;
++                if ((*cp == ' ') || (*cp == '\t')) {
++                    *cp = '\0';
++                } else {
++                    break;
++                }
++            }
++            for (cp = buf + 2; (*cp == ' ') || (*cp == '\t'); cp++) {
++                /* nothing */ ;
++            }
++            if (*cp == '\0') {
++                return -ENOEXEC; /* No interpreter name found */
++            }
++            i_name = cp;
++            i_arg = NULL;
++            for ( ; *cp && (*cp != ' ') && (*cp != '\t'); cp++) {
++                /* nothing */ ;
++            }
++            while ((*cp == ' ') || (*cp == '\t')) {
++                *cp++ = '\0';
++            }
++            if (*cp) {
++                i_arg = cp;
++            }
++
++            if (i_arg) {
++                offset = 5;
++            } else {
++                offset = 4;
++            }
++        }
++
++        /* Need to store execve argument */
++        offset++;
++
++        new_argp = alloca((argc + offset + 1) * sizeof(void *));
++
++        /* Copy the original arguments with offset */
++        for (i = 0; i < argc; i++) {
++            new_argp[i + offset] = argv[i];
++        }
++
++        new_argp[0] = strdup(qemu_execve_path);
++        new_argp[1] = strdup("-execve"); /* Add execve argument */
++        new_argp[2] = strdup("-0");
++        new_argp[offset] = filename;
++        new_argp[argc + offset] = NULL;
++
++        if (i_name) {
++            new_argp[3] = i_name;
++            new_argp[4] = i_name;
++
++            if (i_arg) {
++                new_argp[5] = i_arg;
++            }
++        } else {
++            new_argp[3] = argv[0];
++        }
++    }
++
++    /* Although execve() is not an interruptible syscall it is
++     * a special case where we must use the safe_syscall wrapper:
++     * if we allow a signal to happen before we make the host
++     * syscall then we will 'lose' it, because at the point of
++     * execve the process leaves QEMU's control. So we use the
++     * safe syscall wrapper to ensure that we either take the
++     * signal as a guest signal, or else it does not happen
++     * before the execve completes and makes it the other
++     * program's problem.
++     */
++    return get_errno(safe_execve(new_filename, new_argp, envp));
++}
++
+ /* This is an internal helper for do_syscall so that it is easier
+  * to have a single return point, so that actions, such as logging
+  * of syscall results, can be performed.
+@@ -7494,17 +7625,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
+ 
+             if (!(p = lock_user_string(arg1)))
+                 goto execve_efault;
+-            /* Although execve() is not an interruptible syscall it is
+-             * a special case where we must use the safe_syscall wrapper:
+-             * if we allow a signal to happen before we make the host
+-             * syscall then we will 'lose' it, because at the point of
+-             * execve the process leaves QEMU's control. So we use the
+-             * safe syscall wrapper to ensure that we either take the
+-             * signal as a guest signal, or else it does not happen
+-             * before the execve completes and makes it the other
+-             * program's problem.
+-             */
+-            ret = get_errno(safe_execve(p, argp, envp));
++            ret = qemu_execve(p, argp, envp);
+             unlock_user(p, arg1, 0);
+ 
+             goto execve_end;

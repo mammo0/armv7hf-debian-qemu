@@ -23,9 +23,9 @@ RUN cd ~/rpmbuild/SPECS && \
     yum-builddep -y $PKGNAME_S.spec && \
     rpmbuild -bp $PKGNAME_S.spec
 # apply the execve patch
-COPY src/v3-linux-user-add-option-to-intercept-execve-syscalls.patch /
+COPY src/qemu_v4_execve.patch /
 RUN cd ~/rpmbuild/BUILD/$PKGNAME_S* && \
-    patch -p1 < /v3-linux-user-add-option-to-intercept-execve-syscalls.patch
+    patch -p1 < /qemu_v4_execve.patch
 # build the package
 RUN cd ~/rpmbuild/SPECS && \
     rpmbuild -bc --short-circuit $PKGNAME_S.spec
