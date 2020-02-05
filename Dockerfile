@@ -15,6 +15,9 @@ RUN yum -y install yum-utils rpm-build
 # get the qemu source package and install it to '/root/rpmbuild'
 RUN yumdownloader --source $PKGNAME_L && \
     rpm -i $PKGNAME_S*.src.rpm
+# patch spec file to remove the dynamic build process (we only want to build statically)
+RUN cd ~/rpmbuild/SPECS && \
+    sed -i '/mkdir build-dynamic/{:a;N;/popd/!ba;//d}' $PKGNAME_S.spec
 # install build dependencies and prepare building
 RUN cd ~/rpmbuild/SPECS && \
     yum-builddep -y $PKGNAME_S.spec && \
